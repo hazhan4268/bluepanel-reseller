@@ -9,6 +9,7 @@ from app.config import settings
 from app.db.models import Reseller, ResellerStatus
 from app.schemas import UsageRunResponse
 from app.services.billing_service import apply_usage_bill, debt_limit_reached
+from app.services.panel_service import get_panel
 from app.services.pasarguard_client import PasarGuardClient
 
 
@@ -30,34 +31,42 @@ def extract_usage_bytes(payload: Any) -> int:
     return 0
 
 
+async def build_client_for_reseller(session: AsyncSession, reseller: Reseller) -> PasarGuardClient:
+    panel = await get_panel(session, reseller.panel_id)
+    if panel:
+        return PasarGuardClient(panel.base_url, panel.admin_username, panel.admin_secret)
+    return PasarGuardClient()
+
+
 async def run_usage_monitor_once(session: AsyncSession) -> UsageRunResponse:
     result = await session.execute(select(Reseller).where(Reseller.status != ResellerStatus.disabled.value))
     resellers = list(result.scalars().all())
-    client = PasarGuardClient()
     checked = charged = restricted = 0
     errors: list[str] = []
 
-    try:
-        for reseller in resellers:
-            checked += 1
-            try:
-                usage_payload = await client.get_admin_usage(reseller.pasar_username)
-                total_usage = extract_usage_bytes(usage_payload)
-                delta, cost = await apply_usage_bill(session, reseller, total_usage)
-                if delta > 0 or cost > 0:
-                    charged += 1
-                if debt_limit_reached(reseller):
-                    if settings.disable_users_when_debt_limit_reached:
-                        await client.disable_admin_users(reseller.pasar_username)
-                    if settings.disable_admin_when_debt_limit_reached:
-                        await client.disable_admin(reseller.pasar_username)
-                    reseller.status = ResellerStatus.disabled.value
-                    session.add(reseller)
-                    await session.commit()
-                    restricted += 1
-            except Exception as exc:
-                errors.append(f'{reseller.pasar_username}: {exc}')
-    finally:
-        await client.close()
+    for reseller in resellers:
+        checked += 1
+        client: PasarGuardClient | None = None
+        try:
+            client = await build_client_for_reseller(session, reseller)
+            usage_payload = await client.get_admin_usage(reseller.pasar_username)
+            total_usage = extract_usage_bytes(usage_payload)
+            delta, cost = await apply_usage_bill(session, reseller, total_usage)
+            if delta > 0 or cost > 0:
+                charged += 1
+            if debt_limit_reached(reseller):
+                if settings.disable_users_when_debt_limit_reached:
+                    await client.disable_admin_users(reseller.pasar_username)
+                if settings.disable_admin_when_debt_limit_reached:
+                    await client.disable_admin(reseller.pasar_username)
+                reseller.status = ResellerStatus.disabled.value
+                session.add(reseller)
+                await session.commit()
+                restricted += 1
+        except Exception as exc:
+            errors.append(f'{reseller.pasar_username}: {exc}')
+        finally:
+            if client:
+                await client.close()
 
     return UsageRunResponse(checked=checked, charged=charged, restricted=restricted, errors=errors)
