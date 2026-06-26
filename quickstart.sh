@@ -47,6 +47,10 @@ else
   cd "$APP_DIR"
 fi
 
+chmod +x "$APP_DIR/quickstart.sh"
+ln -sf "$APP_DIR/quickstart.sh" /usr/local/bin/bluepanel-update
+log "Update command installed: bluepanel-update"
+
 if [ ! -f .env ]; then
   cp .env.example .env
   API_KEY=$(python3 - <<'PY'
