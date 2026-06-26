@@ -2,7 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routes_admin import router as admin_router
 from app.api.routes_health import router as health_router
-from app.api.routes_panel import router as panel_router
+from app.api.routes_panel_clean import router as panel_router
 from app.api.routes_telegram import router as telegram_router
 from app.config import settings
 
