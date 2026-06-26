@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.models import Reseller, ResellerStatus, WalletTransaction, WalletTransactionType
 from app.schemas import ResellerProvisionRequest
+from app.services.panel_service import get_panel
 from app.services.pasarguard_client import PasarGuardClient
 
 
@@ -46,16 +47,21 @@ async def provision_reseller(session: AsyncSession, data: ResellerProvisionReque
     if existing:
         raise ResellerServiceError('A reseller with this telegram_id already exists')
 
-    role_id = data.pasar_role_id or settings.default_pasarguard_role_id
+    panel = await get_panel(session, data.panel_id)
+    role_id = data.pasar_role_id or (panel.default_role_id if panel else settings.default_pasarguard_role_id)
     if not role_id:
-        raise ResellerServiceError('DEFAULT_PASARGUARD_ROLE_ID is not configured')
+        raise ResellerServiceError('PasarGuard role id is not configured')
 
     pasar_username = data.pasar_username or default_username(data.telegram_id)
     panel_key = generate_panel_key()
     price_per_gb = data.price_per_gb_toman or settings.default_price_per_gb_toman
     debt_limit = data.debt_limit_toman if data.debt_limit_toman is not None else settings.default_debt_limit_toman
 
-    client = PasarGuardClient()
+    if panel:
+        client = PasarGuardClient(panel.base_url, panel.admin_username, panel.admin_secret)
+    else:
+        client = PasarGuardClient()
+
     try:
         admin_payload = {
             'username': pasar_username,
@@ -76,6 +82,7 @@ async def provision_reseller(session: AsyncSession, data: ResellerProvisionReque
         pasar_admin_id=pasar_admin.get('id'),
         pasar_username=pasar_username,
         pasar_role_id=role_id,
+        panel_id=panel.id if panel else None,
         status=ResellerStatus.active.value,
         balance_toman=data.initial_balance_toman,
         price_per_gb_toman=price_per_gb,
@@ -86,44 +93,20 @@ async def provision_reseller(session: AsyncSession, data: ResellerProvisionReque
     await session.flush()
 
     if data.initial_balance_toman:
-        session.add(
-            WalletTransaction(
-                reseller_id=reseller.id,
-                type=WalletTransactionType.manual_credit.value,
-                amount_toman=data.initial_balance_toman,
-                balance_before_toman=0,
-                balance_after_toman=data.initial_balance_toman,
-                description='Initial reseller balance',
-            )
-        )
+        session.add(WalletTransaction(reseller_id=reseller.id, type=WalletTransactionType.manual_credit.value, amount_toman=data.initial_balance_toman, balance_before_toman=0, balance_after_toman=data.initial_balance_toman, description='Initial reseller balance'))
 
     await session.commit()
     await session.refresh(reseller)
     return reseller, panel_key
 
 
-async def adjust_wallet(
-    session: AsyncSession,
-    reseller: Reseller,
-    amount_toman: int,
-    tx_type: WalletTransactionType,
-    description: str | None = None,
-) -> Reseller:
+async def adjust_wallet(session: AsyncSession, reseller: Reseller, amount_toman: int, tx_type: WalletTransactionType, description: str | None = None) -> Reseller:
     before = reseller.balance_toman
     after = before + amount_toman
     reseller.balance_toman = after
     if after > settings.low_balance_threshold_toman:
         reseller.low_balance_alert_sent = False
-    session.add(
-        WalletTransaction(
-            reseller_id=reseller.id,
-            type=tx_type.value,
-            amount_toman=amount_toman,
-            balance_before_toman=before,
-            balance_after_toman=after,
-            description=description,
-        )
-    )
+    session.add(WalletTransaction(reseller_id=reseller.id, type=tx_type.value, amount_toman=amount_toman, balance_before_toman=before, balance_after_toman=after, description=description))
     await session.commit()
     await session.refresh(reseller)
     return reseller
