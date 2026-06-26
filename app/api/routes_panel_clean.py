@@ -1,4 +1,5 @@
 from html import escape
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,12 +12,24 @@ from app.services.reseller_service import list_resellers
 from app.services.usage_monitor import run_usage_monitor_once
 
 router = APIRouter(tags=['panel'])
-PANEL_VERSION = 'clean-master-v3'
+PANEL_VERSION = 'clean-master-v4-ssl'
 
 
 def check_key(key: str | None) -> None:
     if not settings.api_secret_key or key != settings.api_secret_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid panel key')
+
+
+def require_https_webhook(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != 'https' or not parsed.netloc or parsed.path != '/telegram/webhook':
+        raise HTTPException(status_code=400, detail='Webhook URL must be exactly like https://your-domain.com/telegram/webhook')
+    host = parsed.hostname or ''
+    if host.replace('.', '').isdigit():
+        raise HTTPException(status_code=400, detail='Webhook requires a real SSL domain, not an IP address')
+    return url.rstrip('/')
 
 
 def h(value: object) -> str:
@@ -43,10 +56,10 @@ async def panel(key: str | None = Query(default=None), session: AsyncSession = D
     hook_badge = badge('Webhook on', 'ok') if bot.webhook_enabled else badge('Webhook off', 'warn')
     panel_rows = ''.join(f'<tr><td>#{p.id}</td><td>{h(p.name)}</td><td class="mono">{h(p.base_url)}</td><td class="mono">{h(p.dashboard_url) or "-"}</td><td>{p.default_role_id}</td><td>{badge("active","ok") if p.is_active else badge("off","bad")}</td></tr>' for p in panels) or '<tr><td colspan="6">No PasarGuard connection.</td></tr>'
     reseller_rows = ''.join(f'<tr><td>#{r.id}</td><td>{r.telegram_id}</td><td>{h(r.telegram_username) or "-"}</td><td class="mono">{h(r.pasar_username)}</td><td>{badge(r.status,"ok" if r.status == "active" else "warn")}</td><td>{r.balance_toman:,}</td><td>{r.price_per_gb_toman:,}</td><td>{(r.last_total_usage_bytes or 0)/(1024**3):,.2f} GB</td><td>{r.panel_id or "-"}</td></tr>' for r in resellers) or '<tr><td colspan="9">No reseller yet. Creation is inside Telegram bot.</td></tr>'
-    secret_value = h(bot.webhook_secret) if bot.webhook_secret else 'WEBHOOK_SECRET'
+    default_hook = f'https://{settings.public_domain}/telegram/webhook' if getattr(settings, 'public_domain', '') else 'https://your-domain.com/telegram/webhook'
     body = f'''
-<div class="top"><div><h1>BluePanel Master Panel</h1><p class="hint">Clean system panel. Reseller creation is only inside Telegram bot.</p></div><span class="ver">{PANEL_VERSION}</span></div>
-<div class="grid"><div class="card"><h2>Telegram</h2><p>{bot_badge} {hook_badge}</p><form method="post" action="/panel/bot?key={h(key)}"><label>Bot credential</label><input class="mono" name="bot_token"><label>Webhook URL</label><input class="mono" name="webhook_url" value="{h(bot.webhook_url)}" placeholder="https://domain.com/telegram/webhook/{secret_value}"><label>Webhook key</label><input class="mono" name="webhook_secret" value="{secret_value}"><button>Save Telegram</button></form><div class="actions"><form method="post" action="/panel/bot/set-webhook?key={h(key)}"><button class="green">Set Webhook</button></form><form method="post" action="/panel/bot/delete-webhook?key={h(key)}"><button class="red">Delete Webhook</button></form></div></div>
+<div class="top"><div><h1>BluePanel Master Panel</h1><p class="hint">Webhook is simple and SSL-only: https://domain.com/telegram/webhook</p></div><span class="ver">{PANEL_VERSION}</span></div>
+<div class="grid"><div class="card"><h2>Telegram</h2><p>{bot_badge} {hook_badge}</p><form method="post" action="/panel/bot?key={h(key)}"><label>Bot credential</label><input class="mono" name="bot_token"><label>Webhook HTTPS URL</label><input class="mono" name="webhook_url" value="{h(bot.webhook_url)}" placeholder="{default_hook}"><button>Save Telegram</button></form><div class="actions"><form method="post" action="/panel/bot/set-webhook?key={h(key)}"><button class="green">Set Webhook</button></form><form method="post" action="/panel/bot/delete-webhook?key={h(key)}"><button class="red">Delete Webhook</button></form></div></div>
 <div class="card"><h2>PasarGuard</h2><p class="hint">Connect the real PasarGuard panel. Bot creates operators there.</p><form method="post" action="/panel/pasarguard-panels?key={h(key)}"><label>Name</label><input name="name" required><label>Base URL</label><input class="mono" name="base_url" required><label>Dashboard URL</label><input class="mono" name="dashboard_url"><label>Owner user</label><input name="admin_username" required><label>Owner key</label><input name="admin_secret" required><label>Default role ID</label><input name="default_role_id" type="number" value="0"><button>Save PasarGuard</button></form></div></div>
 <div class="card"><h2>Usage monitor</h2><p class="hint">Reads usage and applies billing.</p><form method="post" action="/panel/usage/run-once?key={h(key)}"><button class="green">Run now</button></form></div>
 <div class="card"><h2>Resellers</h2><p class="hint">Read-only report. No creation form here.</p><div class="table"><table><thead><tr><th>ID</th><th>Telegram ID</th><th>Telegram</th><th>PasarGuard user</th><th>Status</th><th>Balance</th><th>Price/GB</th><th>Usage</th><th>Panel</th></tr></thead><tbody>{reseller_rows}</tbody></table></div></div>
@@ -56,9 +69,10 @@ async def panel(key: str | None = Query(default=None), session: AsyncSession = D
 
 
 @router.post('/panel/bot')
-async def panel_bot_save(key: str | None = Query(default=None), bot_token: str | None = Form(default=None), webhook_url: str | None = Form(default=None), webhook_secret: str | None = Form(default=None), session: AsyncSession = Depends(get_session)):
+async def panel_bot_save(key: str | None = Query(default=None), bot_token: str | None = Form(default=None), webhook_url: str | None = Form(default=None), session: AsyncSession = Depends(get_session)):
     check_key(key)
-    config = await update_bot_config(session, BotConfigUpdate(bot_token=bot_token or None, webhook_url=webhook_url or None, webhook_secret=webhook_secret or None))
+    safe_url = require_https_webhook(webhook_url)
+    config = await update_bot_config(session, BotConfigUpdate(bot_token=bot_token or None, webhook_url=safe_url, webhook_secret=None))
     if config.bot_token:
         try:
             me = await telegram_get_me(config.bot_token)
@@ -75,8 +89,9 @@ async def panel_bot_set_webhook(key: str | None = Query(default=None), session: 
     check_key(key)
     config = await get_bot_config(session)
     if not config.bot_token or not config.webhook_url:
-        raise HTTPException(status_code=400, detail='Bot credential and webhook URL required')
-    await telegram_set_webhook(config.bot_token, config.webhook_url, config.webhook_secret)
+        raise HTTPException(status_code=400, detail='Bot credential and HTTPS webhook URL required')
+    safe_url = require_https_webhook(config.webhook_url)
+    await telegram_set_webhook(config.bot_token, safe_url)
     config.webhook_enabled = True
     session.add(config)
     await session.commit()
