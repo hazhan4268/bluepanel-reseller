@@ -22,6 +22,37 @@ class WalletTransactionType(StrEnum):
     correction = 'correction'
 
 
+class PasarGuardPanel(Base):
+    __tablename__ = 'pasarguard_panels'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    base_url: Mapped[str] = mapped_column(String(255))
+    dashboard_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    admin_username: Mapped[str] = mapped_column(String(128))
+    admin_secret: Mapped[str] = mapped_column(Text)
+    default_role_id: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    resellers: Mapped[list['Reseller']] = relationship(back_populates='panel')
+
+
+class BotConfig(Base):
+    __tablename__ = 'bot_config'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    bot_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    webhook_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Reseller(Base):
     __tablename__ = 'resellers'
 
@@ -37,10 +68,12 @@ class Reseller(Base):
     debt_limit_toman: Mapped[int] = mapped_column(Integer, default=50000)
     last_total_usage_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     low_balance_alert_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    panel_id: Mapped[int | None] = mapped_column(ForeignKey('pasarguard_panels.id'), nullable=True, index=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    panel: Mapped[PasarGuardPanel | None] = relationship(back_populates='resellers')
     wallet_transactions: Mapped[list['WalletTransaction']] = relationship(back_populates='reseller')
     usage_snapshots: Mapped[list['UsageSnapshot']] = relationship(back_populates='reseller')
 
