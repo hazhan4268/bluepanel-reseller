@@ -13,10 +13,13 @@ class PasarGuardError(RuntimeError):
 
 
 class PasarGuardClient:
-    def __init__(self) -> None:
-        if not settings.pasarguard_base_url:
-            raise PasarGuardError('PASARGUARD_BASE_URL is not configured')
-        self.base_url = settings.pasarguard_base_url.rstrip('/')
+    def __init__(self, base_url: str | None = None, admin_username: str | None = None, admin_secret: str | None = None) -> None:
+        resolved_base_url = base_url or settings.pasarguard_base_url
+        if not resolved_base_url:
+            raise PasarGuardError('PasarGuard base URL is not configured')
+        self.base_url = resolved_base_url.rstrip('/')
+        self.admin_username = admin_username or settings.pasarguard_admin_username
+        self.admin_secret = admin_secret or settings.pasarguard_admin_secret
         self._token: str | None = None
         self._token_created_at = 0.0
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0, verify=True)
@@ -27,16 +30,9 @@ class PasarGuardClient:
     async def login(self) -> str:
         if self._token and time.time() - self._token_created_at < 1800:
             return self._token
-        if not settings.pasarguard_admin_username or not settings.pasarguard_admin_secret:
+        if not self.admin_username or not self.admin_secret:
             raise PasarGuardError('PasarGuard admin credential is not configured')
-        response = await self._client.post(
-            '/api/admin/token',
-            data={
-                'username': settings.pasarguard_admin_username,
-                'password': settings.pasarguard_admin_secret,
-            },
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        )
+        response = await self._client.post('/api/admin/token', data={'username': self.admin_username, 'password': self.admin_secret}, headers={'Content-Type': 'application/x-www-form-urlencoded'})
         if response.status_code >= 400:
             raise PasarGuardError(f'PasarGuard login failed: {response.status_code} {response.text}')
         payload = response.json()
@@ -85,6 +81,5 @@ class PasarGuardClient:
     async def get_admin_usage(self, username: str) -> Any:
         return await self.request('GET', f'/api/admin/{username}/usage')
 
-    async def get_admins(self, search: str | None = None) -> Any:
-        params = {'search': search} if search else None
-        return await self.request('GET', '/api/admins', params=params)
+    async def test_connection(self) -> Any:
+        return await self.request('GET', '/api/admin')
