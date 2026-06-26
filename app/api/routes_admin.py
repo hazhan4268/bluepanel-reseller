@@ -14,8 +14,7 @@ router = APIRouter(prefix='/api/admin', tags=['admin'], dependencies=[Depends(re
 
 
 def to_response(reseller) -> ResellerResponse:
-    panel_url = reseller.panel.dashboard_url if getattr(reseller, 'panel', None) and reseller.panel.dashboard_url else settings.pasarguard_dashboard_url or None
-    return ResellerResponse.model_validate(reseller).model_copy(update={'panel_url': panel_url})
+    return ResellerResponse.model_validate(reseller).model_copy(update={'panel_url': settings.pasarguard_dashboard_url or None})
 
 
 def bot_config_response(config) -> BotConfigResponse:
@@ -33,7 +32,7 @@ async def provision(data: ResellerProvisionRequest, session: AsyncSession = Depe
         reseller, panel_access = await provision_reseller(session, data)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {'reseller': to_response(reseller), 'panel_access': panel_access, 'panel_url': to_response(reseller).panel_url}
+    return {'reseller': to_response(reseller), 'panel_access': panel_access, 'panel_url': settings.pasarguard_dashboard_url or None}
 
 
 @router.get('/resellers', response_model=list[ResellerResponse])
